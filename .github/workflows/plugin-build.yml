@@ -326,7 +326,9 @@ jobs:
         run: |
           set -euo pipefail
           dylib="staging/$LIB_FILE"
-          for rp in $(otool -l "$dylib" | awk '/cmd LC_RPATH/{found=1} found && /path /{print $2; found=0}'); do
+          # sort -u: otool lists the load commands of every slice of a
+          # universal binary, and one delete removes the rpath from all.
+          for rp in $(otool -l "$dylib" | awk '/cmd LC_RPATH/{found=1} found && /path /{print $2; found=0}' | sort -u); do
             install_name_tool -delete_rpath "$rp" "$dylib"
           done
           install_name_tool -add_rpath @loader_path/../../../Frameworks "$dylib"
@@ -354,8 +356,13 @@ jobs:
             fi
             dest="staging/$fw.framework/Versions/A"
             mkdir -p "$dest"
-            cp "$src" "$dest/$fw"
-            for rp in $(otool -l "$dest/$fw" | awk '/cmd LC_RPATH/{found=1} found && /path /{print $2; found=0}'); do
+            # Qt's frameworks are universal; the plugin is arm64 only.
+            if lipo -archs "$src" | grep -qw x86_64; then
+              lipo "$src" -thin arm64 -output "$dest/$fw"
+            else
+              cp "$src" "$dest/$fw"
+            fi
+            for rp in $(otool -l "$dest/$fw" | awk '/cmd LC_RPATH/{found=1} found && /path /{print $2; found=0}' | sort -u); do
               install_name_tool -delete_rpath "$rp" "$dest/$fw"
             done
             echo "Bundled $fw ($(wc -c < "$dest/$fw") bytes)"

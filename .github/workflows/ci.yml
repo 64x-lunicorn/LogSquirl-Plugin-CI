@@ -1,0 +1,136 @@
+name: "CI"
+
+# Checks this repository before a release reaches the plugins: the shared
+# workflows and the rendered template/ workflows lint clean, every action is
+# pinned and allowlisted, zizmor finds nothing of high severity, and
+# sync-plugin.sh round-trips.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions: {}
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  ACTIONLINT_VERSION: 1.7.12
+  ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+  # Any full SHA and version: what the template renders to in a plugin.
+  RENDER_REF: 0123456789abcdef0123456789abcdef01234567
+  RENDER_VERSION: v0.0.0
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install actionlint
+        run: |
+          set -euo pipefail
+          tarball="$RUNNER_TEMP/actionlint.tar.gz"
+          curl -fsSL -o "$tarball" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "$ACTIONLINT_SHA256  $tarball" | sha256sum -c -
+          tar -xzf "$tarball" -C "$RUNNER_TEMP" actionlint
+
+      - name: Render the template workflows
+        run: |
+          set -euo pipefail
+          mkdir -p rendered/.github/workflows
+          for f in template/.github/workflows/*.yml; do
+            sed "s|@@PLUGIN_CI_SHA@ # @PLUGIN_CI_VERSION@|@$RENDER_REF # $RENDER_VERSION|" "$f" \
+              > "rendered/.github/workflows/${f##*/}"
+          done
+
+      # actionlint runs shellcheck over every run: block (shellcheck is on
+      # the runner image).
+      - name: actionlint
+        run: |
+          "$RUNNER_TEMP/actionlint" -color .github/workflows/*.yml rendered/.github/workflows/*.yml
+
+      - name: shellcheck
+        run: shellcheck scripts/*.sh
+
+      - name: Action pins
+        run: scripts/check-action-pins.sh .github/workflows/*.yml rendered/.github/workflows/*.yml
+
+      - name: Action allowlist
+        run: scripts/check-allowlist.sh .github/workflows/plugin-*.yml rendered/.github/workflows/*.yml
+
+  zizmor:
+    name: zizmor
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      security-events: write # upload the SARIF to code scanning
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Report findings to code scanning
+        uses: zizmorcore/zizmor-action@cc914d7f3750a2d13d75c7f184a1060aa0e9d482 # v0.6.4
+
+      - name: Fail on high-severity findings
+        uses: zizmorcore/zizmor-action@cc914d7f3750a2d13d75c7f184a1060aa0e9d482 # v0.6.4
+        with:
+          min-severity: high
+          advanced-security: false
+          annotations: true
+
+  sync:
+    name: Sync round trip
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # A synced plugin has no drift; a changed shared file, an extra
+      # workflow and pins to two releases each are drift.
+      - name: Sync a fixture plugin and check it
+        run: |
+          set -euo pipefail
+          plugin="$RUNNER_TEMP/plugin"
+          mkdir -p "$plugin/.github" "$plugin/include"
+          echo '{"id": "io.github.logsquirl.fixture", "library": "logsquirl_fixture"}' > "$plugin/plugin.json"
+          echo '{"host_ref": "v26.07.0"}' > "$plugin/.github/plugin-ci.json"
+
+          scripts/sync-plugin.sh --ref "$RENDER_REF" --version "$RENDER_VERSION" "$plugin"
+          scripts/sync-plugin.sh --check "$plugin"
+
+          expect_drift() {
+            if scripts/sync-plugin.sh --check "$plugin"; then
+              echo "::error::--check missed: $1"
+              exit 1
+            fi
+          }
+          echo "# local change" >> "$plugin/.gitignore"
+          expect_drift "a changed shared file"
+          scripts/sync-plugin.sh --ref "$RENDER_REF" --version "$RENDER_VERSION" "$plugin"
+
+          touch "$plugin/.github/workflows/extra.yml"
+          expect_drift "a workflow that is not in template/"
+          rm "$plugin/.github/workflows/extra.yml"
+
+          sed -i "s|@$RENDER_REF # $RENDER_VERSION|@$(printf 'f%.0s' {1..40}) # v9.9.9|" \
+            "$plugin/.github/workflows/ci-build.yml"
+          expect_drift "pins to two releases"
+          echo "sync-plugin.sh round-trips"

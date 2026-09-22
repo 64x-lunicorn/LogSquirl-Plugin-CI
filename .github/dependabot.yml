@@ -1,0 +1,23 @@
+version: 2
+# Keeps the actions pinned in the shared workflows current. A bump released
+# here reaches the plugins through their own Dependabot, which moves their
+# pins to the new LogSquirl-Plugin-CI release.
+#
+# A release is only proposed once it is a week old, so a compromised or
+# broken version is usually yanked before it reaches a pull request. Security
+# updates ignore the cooldown.
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    labels:
+      - "ci"
+      - "dependencies"
+    groups:
+      github-actions-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"

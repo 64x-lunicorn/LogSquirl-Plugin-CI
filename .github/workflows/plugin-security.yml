@@ -1,0 +1,77 @@
+name: "Plugin Workflow Security"
+
+# The Workflow Security check of every LogSquirl plugin, called by the
+# plugin's .github/workflows/workflow-security.yml (template/).
+#
+# zizmor audits the plugin's workflows and Dependabot config for template
+# injection, credential leaks, excessive permissions and dangerous triggers;
+# every finding goes to code scanning, a high-severity one fails the job. The
+# pin check fails any `uses:` that is not pinned to a full commit SHA with its
+# release version as a comment, which is also what the repository setting
+# sha_pinning_required enforces once scripts/repo-settings.sh applied it.
+on:
+  workflow_call:
+
+permissions: {}
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  zizmor:
+    name: zizmor
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      security-events: write # upload the SARIF to code scanning
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # zizmor exits 0 in SARIF mode, so this step never fails.
+      - name: Report findings to code scanning
+        uses: zizmorcore/zizmor-action@cc914d7f3750a2d13d75c7f184a1060aa0e9d482 # v0.6.4
+
+      - name: Fail on high-severity findings
+        uses: zizmorcore/zizmor-action@cc914d7f3750a2d13d75c7f184a1060aa0e9d482 # v0.6.4
+        with:
+          min-severity: high
+          advanced-security: false
+          annotations: true
+
+  pins:
+    name: Action pins
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # A tag can be moved to other code; a commit SHA cannot. The version
+      # comment is what Dependabot reads and rewrites when it bumps the pin.
+      # Local actions (./...) are exempt; docker:// images need a digest.
+      - name: Check that every action is pinned to a commit SHA
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          pinned='^[[:space:]]*(-[[:space:]]+)?uses:[[:space:]]+[A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+@[0-9a-f]{40}[[:space:]]+#[[:space:]]+v[0-9]+(\.[0-9]+)*[[:space:]]*$'
+          exempt='^[[:space:]]*(-[[:space:]]+)?uses:[[:space:]]+(\./|docker://[^[:space:]]+@sha256:[0-9a-f]{64}([[:space:]]|$))'
+          files=(.github/workflows/*.y*ml .github/actions/*/action.y*ml)
+          status=0
+          while IFS= read -r hit; do
+            file=${hit%%:*}
+            rest=${hit#*:}
+            line=${rest%%:*}
+            text=${rest#*:}
+            if ! grep -Eq "$pinned" <<<"$text" && ! grep -Eq "$exempt" <<<"$text"; then
+              echo "::error file=$file,line=$line::not pinned to a commit SHA with a '# vX.Y.Z' comment:$text"
+              status=1
+            fi
+          done < <(grep -nE '^[[:space:]]*(-[[:space:]]+)?uses:' "${files[@]}" /dev/null || true)
+          [ "$status" -ne 0 ] || echo "Every action is pinned to a commit SHA."
+          exit $status

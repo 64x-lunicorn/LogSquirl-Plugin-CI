@@ -60,8 +60,17 @@ Per plugin:
   `host_ref` is the LogSquirl release the plugin is built against: CI takes
   that release's Qt version and requires its plugin API header byte for byte.
   `qt_modules` are extra aqt modules to install, `bundle_qt_frameworks` the
-  Qt frameworks the macOS package carries because the host app does not ship
-  them. Both may be omitted.
+  Qt libraries the package carries because the host app does not ship them:
+  the framework on macOS, `libQt6<Name>.so.6` on Linux, `Qt6<Name>.dll` on
+  Windows. Both may be omitted; any other key is an error.
+
+  LogSquirl ships QtCore, QtGui, QtWidgets, QtConcurrent, QtNetwork, QtXml
+  (and QtDBus on Linux, where a bundled QtDBus is left out). CI fails a
+  plugin whose library, or a library it bundles, links any other Qt library
+  that is not bundled, because such a plugin builds and tests green but does
+  not load on a user machine. On Windows, a bundled DLL is found only by a
+  LogSquirl that adds the plugin's directory to the DLL search path when it
+  loads the plugin.
 - `CHANGELOG.md` with one `## [X.Y.Z]` section per release: the release notes.
 - `releases.json`: the plugin's catalog entry list.
 

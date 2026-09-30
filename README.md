@@ -65,8 +65,9 @@ Per plugin:
   Windows. Both may be omitted; any other key is an error.
 
   LogSquirl ships QtCore, QtGui, QtWidgets, QtConcurrent, QtNetwork, QtXml
-  (and QtDBus on Linux). CI fails a plugin that links any other Qt library
-  without bundling it, because such a plugin builds and tests green but does
+  (and QtDBus on Linux, where a bundled QtDBus is left out). CI fails a
+  plugin whose library, or a library it bundles, links any other Qt library
+  that is not bundled, because such a plugin builds and tests green but does
   not load on a user machine. On Windows, a bundled DLL is found only by a
   LogSquirl that adds the plugin's directory to the DLL search path when it
   loads the plugin.

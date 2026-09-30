@@ -352,7 +352,9 @@ jobs:
 
       - name: Install patchelf
         if: runner.os == 'Linux'
-        run: sudo apt-get install -y --no-install-recommends patchelf
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y --no-install-recommends patchelf
 
       # Qt modules the host app does not ship travel with the plugin, on every
       # platform: on macOS only the framework binary, in a Versions/A layout
@@ -368,8 +370,13 @@ jobs:
           qt6_dir=$(grep '^Qt6_DIR:' build/CMakeCache.txt | cut -d= -f2)
           qt_root=$(cd "$qt6_dir/../../.." && pwd)
           for fw in $BUNDLE_QT_FRAMEWORKS; do
-            case " $HOST_QT_LIBRARIES $HOST_QT_EXTRA " in
+            case " $HOST_QT_LIBRARIES " in
               *" $fw "*) echo "::error::$fw ships with LogSquirl; remove it from bundle_qt_frameworks"; exit 1 ;;
+            esac
+            # QtDBus ships with LogSquirl on Linux only: a plugin that needs it
+            # bundles it for macOS and Windows and takes the host's here.
+            case " $HOST_QT_EXTRA " in
+              *" $fw "*) echo "Not bundling $fw: LogSquirl ships it on $RUNNER_OS"; continue ;;
             esac
             module=${fw#Qt}
             case "$RUNNER_OS" in
@@ -428,30 +435,40 @@ jobs:
           patchelf --set-rpath '$ORIGIN' "staging/$LIB_FILE"
           readelf -d "staging/$LIB_FILE" | grep -E 'RPATH|RUNPATH'
 
-      # Every Qt library the plugin links is one the host ships or one the
-      # package carries; anything else fails to load on a user machine while
-      # CI, with the whole Qt installed, stays green.
-      - name: Check the Qt libraries the plugin links
+      # Every Qt library the plugin and the libraries it bundles link is one
+      # the host ships or one the package carries; anything else fails to load
+      # on a user machine while CI, with the whole Qt installed, stays green.
+      - name: Check the Qt libraries the package links
         run: |
           set -euo pipefail
-          case "$RUNNER_OS" in
-            macOS) linked=$(otool -L "staging/$LIB_FILE" | grep -oE '@rpath/Qt[A-Za-z0-9]+\.framework' | sed -E 's|@rpath/(Qt[A-Za-z0-9]+)\.framework|\1|') ;;
-            Linux) linked=$(readelf -d "staging/$LIB_FILE" | grep -oE 'libQt6[A-Za-z0-9]+\.so' | sed -E 's|libQt6([A-Za-z0-9]+)\.so|Qt\1|') ;;
-            Windows) linked=$(dumpbin -nologo -dependents "staging/$LIB_FILE" | grep -oiE 'Qt6[A-Za-z0-9]+\.dll' | sed -E 's|Qt6([A-Za-z0-9]+)\.dll|Qt\1|I') ;;
-          esac
-          status=0
-          # Qt library names are single words.
-          # shellcheck disable=SC2013
-          for lib in $(sort -u <<<"$linked"); do
-            case " $HOST_QT_LIBRARIES $HOST_QT_EXTRA " in
-              *" $lib "*) echo "host     $lib" ;;
-              *)
-                case " $BUNDLE_QT_FRAMEWORKS " in
-                  *" $lib "*) echo "bundled  $lib" ;;
-                  *) echo "::error::$LIB_FILE links $lib, which LogSquirl does not ship; add it to bundle_qt_frameworks in .github/plugin-ci.json"; status=1 ;;
-                esac
-                ;;
+          qt_links() { # binary -> the Qt libraries it links, one per line
+            case "$RUNNER_OS" in
+              # tail: the first entry of a framework is its own install name.
+              macOS) otool -L "$1" | tail -n +2 | grep -oE '@rpath/Qt[A-Za-z0-9]+\.framework' | sed -E 's|@rpath/(Qt[A-Za-z0-9]+)\.framework|\1|' || true ;;
+              Linux) readelf -d "$1" | grep NEEDED | grep -oE 'libQt6[A-Za-z0-9]+\.so' | sed -E 's|libQt6([A-Za-z0-9]+)\.so|Qt\1|' || true ;;
+              Windows) dumpbin -nologo -dependents "$1" | grep -oiE 'Qt6[A-Za-z0-9]+\.dll' | sed -E 's|Qt6([A-Za-z0-9]+)\.dll|Qt\1|I' || true ;;
             esac
+          }
+          binaries=("staging/$LIB_FILE")
+          while IFS= read -r -d '' f; do
+            binaries+=("$f")
+          done < <(find staging -type f \( -path '*.framework/Versions/A/*' -o -name 'libQt6*.so.6' -o -name 'Qt6*.dll' \) -print0)
+          status=0
+          for bin in "${binaries[@]}"; do
+            echo "== ${bin#staging/}"
+            # Qt library names are single words.
+            # shellcheck disable=SC2013
+            for lib in $(qt_links "$bin" | sort -u); do
+              case " $HOST_QT_LIBRARIES $HOST_QT_EXTRA " in
+                *" $lib "*) echo "host     $lib" ;;
+                *)
+                  case " $BUNDLE_QT_FRAMEWORKS " in
+                    *" $lib "*) echo "bundled  $lib" ;;
+                    *) echo "::error::${bin#staging/} links $lib, which LogSquirl does not ship; add it to bundle_qt_frameworks in .github/plugin-ci.json"; status=1 ;;
+                  esac
+                  ;;
+              esac
+            done
           done
           exit $status
 

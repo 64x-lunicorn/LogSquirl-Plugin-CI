@@ -237,13 +237,20 @@ jobs:
           path: build/plugin-macos-arm64/
           if-no-files-found: error
 
+      # One directory: an artifact of several paths keeps them under their
+      # common ancestor (build/plugin-linux-x64/, meta/), while Publish reads
+      # inputs/plugin-<platform>/ and inputs/meta/.
+      - name: Stage the release inputs
+        run: |
+          set -euo pipefail
+          mkdir -p release-inputs
+          cp -R build/plugin-linux-x64 build/plugin-windows-x64 meta release-inputs/
+          find release-inputs -type f | sort
+
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-inputs
-          path: |
-            build/plugin-linux-x64/
-            build/plugin-windows-x64/
-            meta/
+          path: release-inputs/
           if-no-files-found: error
 
   # ── Job 2: Sign and notarize macOS ─────────────────────────────────────
@@ -384,6 +391,11 @@ jobs:
           set -euo pipefail
           mkdir -p assets
           for p in $PLATFORMS; do
+            if [ ! -d "inputs/plugin-$p" ]; then
+              echo "::error::inputs/plugin-$p is missing; the release inputs hold:"
+              find inputs -maxdepth 2 | sort
+              exit 1
+            fi
             zip_name="logsquirl-$SLUG-$VERSION-$p.zip"
             (cd "inputs/plugin-$p" && zip -r -X -q "$GITHUB_WORKSPACE/assets/$zip_name" .)
             echo "== $zip_name"

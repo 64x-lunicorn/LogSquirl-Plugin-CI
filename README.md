@@ -39,6 +39,7 @@ Shared, identical in every plugin ([`template/`](template)), kept so by
 .github/workflows/ci-build.yml
 .github/workflows/ci-release.yml
 .github/workflows/workflow-security.yml
+docs/agents/issue-tracker.md          issues, labels and milestones
 include/logsquirl_plugin_api.h        from the LogSquirl release in host_ref
 ```
 

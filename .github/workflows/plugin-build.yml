@@ -443,8 +443,9 @@ jobs:
           set -euo pipefail
           qt_links() { # binary -> the Qt libraries it links, one per line
             case "$RUNNER_OS" in
-              # tail: the first entry of a framework is its own install name.
-              macOS) otool -L "$1" | tail -n +2 | grep -oE '@rpath/Qt[A-Za-z0-9]+\.framework' | sed -E 's|@rpath/(Qt[A-Za-z0-9]+)\.framework|\1|' || true ;;
+              # -X drops the header line; the library's own install name
+              # (otool -D) is not a dependency.
+              macOS) otool -L -X "$1" | awk -v self="$(otool -D "$1" | sed -n 2p)" '$1 != self {print $1}' | grep -oE '@rpath/Qt[A-Za-z0-9]+\.framework' | sed -E 's|@rpath/(Qt[A-Za-z0-9]+)\.framework|\1|' || true ;;
               Linux) readelf -d "$1" | grep NEEDED | grep -oE 'libQt6[A-Za-z0-9]+\.so' | sed -E 's|libQt6([A-Za-z0-9]+)\.so|Qt\1|' || true ;;
               Windows) dumpbin -nologo -dependents "$1" | grep -oiE 'Qt6[A-Za-z0-9]+\.dll' | sed -E 's|Qt6([A-Za-z0-9]+)\.dll|Qt\1|I' || true ;;
             esac

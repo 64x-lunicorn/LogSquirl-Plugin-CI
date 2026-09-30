@@ -27,8 +27,10 @@ env:
   HOST_REPO: 64x-lunicorn/LogSquirl
   # The Qt libraries every LogSquirl package ships (the modules the host links).
   # A plugin may link these; any other Qt library must be in the plugin's
-  # bundle_qt_frameworks, or the plugin does not load on a user machine.
-  HOST_QT_LIBRARIES: QtCore QtGui QtWidgets QtConcurrent QtNetwork QtXml QtDBus
+  # bundle_qt_frameworks, or the plugin does not load on a user machine. The
+  # Linux packages also carry QtDBus (QtGui's dependency there): the build
+  # matrix adds it as HOST_QT_EXTRA.
+  HOST_QT_LIBRARIES: QtCore QtGui QtWidgets QtConcurrent QtNetwork QtXml
 
 jobs:
   # -----------------------------------------------------------------------
@@ -230,6 +232,7 @@ jobs:
             os: ubuntu-24.04
             qt-arch: linux_gcc_64
             platform: linux-x64
+            host-qt-extra: QtDBus
           - name: macOS arm64
             os: macos-15
             qt-arch: clang_64
@@ -240,6 +243,7 @@ jobs:
             platform: windows-x64
     env:
       LIBRARY: ${{ needs.setup.outputs.library }}
+      HOST_QT_EXTRA: ${{ matrix.host-qt-extra }}
       PLUGIN_TYPE: ${{ needs.setup.outputs.type }}
       ICON: ${{ needs.setup.outputs.icon }}
       BUNDLE_QT_FRAMEWORKS: ${{ needs.setup.outputs.bundle-qt-frameworks }}
@@ -364,7 +368,7 @@ jobs:
           qt6_dir=$(grep '^Qt6_DIR:' build/CMakeCache.txt | cut -d= -f2)
           qt_root=$(cd "$qt6_dir/../../.." && pwd)
           for fw in $BUNDLE_QT_FRAMEWORKS; do
-            case " $HOST_QT_LIBRARIES " in
+            case " $HOST_QT_LIBRARIES $HOST_QT_EXTRA " in
               *" $fw "*) echo "::error::$fw ships with LogSquirl; remove it from bundle_qt_frameworks"; exit 1 ;;
             esac
             module=${fw#Qt}
@@ -439,7 +443,7 @@ jobs:
           # Qt library names are single words.
           # shellcheck disable=SC2013
           for lib in $(sort -u <<<"$linked"); do
-            case " $HOST_QT_LIBRARIES " in
+            case " $HOST_QT_LIBRARIES $HOST_QT_EXTRA " in
               *" $lib "*) echo "host     $lib" ;;
               *)
                 case " $BUNDLE_QT_FRAMEWORKS " in

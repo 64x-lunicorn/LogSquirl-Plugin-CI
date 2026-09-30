@@ -7,6 +7,7 @@ name: "Plugin CI Build"
 #   plugin.json              id, version, library, type, api_version, icon
 #   .github/plugin-ci.json   host_ref (the LogSquirl release the plugin is built
 #                            against), qt_modules, bundle_qt_frameworks
+#                            (Qt libraries the package carries on every platform)
 #
 # host_ref decides the Qt version and the plugin API header: a plugin is built
 # with the Qt of that LogSquirl release, and its vendored logsquirl_plugin_api.h
@@ -24,6 +25,10 @@ permissions: {}
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   HOST_REPO: 64x-lunicorn/LogSquirl
+  # The Qt libraries every LogSquirl package ships (the modules the host links).
+  # A plugin may link these; any other Qt library must be in the plugin's
+  # bundle_qt_frameworks, or the plugin does not load on a user machine.
+  HOST_QT_LIBRARIES: QtCore QtGui QtWidgets QtConcurrent QtNetwork QtXml QtDBus
 
 jobs:
   # -----------------------------------------------------------------------
@@ -93,6 +98,12 @@ jobs:
             grep -oE 'VERSION[[:space:]]+[0-9]+\.[0-9]+\.[0-9]+' | awk '{print $2}' | head -1)
           if [ "$cmake_version" != "${version%%-*}" ]; then
             fail CMakeLists.txt "project(VERSION $cmake_version) does not match plugin.json version $version"
+          fi
+
+          # A misspelt key would silently drop what it configures.
+          unknown=$(jq -r 'keys - ["host_ref", "qt_modules", "bundle_qt_frameworks"] | join(", ")' .github/plugin-ci.json)
+          if [ -n "$unknown" ]; then
+            fail .github/plugin-ci.json "unknown keys: $unknown (known: host_ref, qt_modules, bundle_qt_frameworks)"
           fi
 
           host_ref=$(jq -r '.host_ref // ""' .github/plugin-ci.json)
@@ -319,8 +330,8 @@ jobs:
 
       # The Qt path of the runner is baked into the dylib and does not exist
       # on user machines. The plugin resolves Qt from the host app bundle
-      # (Contents/PlugIns/<id>/ -> Contents/Frameworks/) and bundled
-      # frameworks from its own directory.
+      # (Contents/PlugIns/<id>/ -> ../../Frameworks is Contents/Frameworks/)
+      # and bundled frameworks from its own directory.
       - name: Fix the macOS rpaths
         if: runner.os == 'macOS'
         run: |
@@ -331,52 +342,128 @@ jobs:
           for rp in $(otool -l "$dylib" | awk '/cmd LC_RPATH/{found=1} found && /path /{print $2; found=0}' | sort -u); do
             install_name_tool -delete_rpath "$rp" "$dylib"
           done
-          install_name_tool -add_rpath @loader_path/../../../Frameworks "$dylib"
+          install_name_tool -add_rpath @loader_path/../../Frameworks "$dylib"
           install_name_tool -add_rpath @loader_path "$dylib"
           otool -l "$dylib" | grep -A2 LC_RPATH
 
-      # Qt modules the host app does not ship travel with the plugin: only the
-      # framework binary, in a Versions/A layout without symlinks so it
-      # survives the ZIP archive. QtCore and QtWidgets are the host's.
-      - name: Bundle Qt frameworks
-        if: runner.os == 'macOS' && env.BUNDLE_QT_FRAMEWORKS != ''
+      - name: Install patchelf
+        if: runner.os == 'Linux'
+        run: sudo apt-get install -y --no-install-recommends patchelf
+
+      # Qt modules the host app does not ship travel with the plugin, on every
+      # platform: on macOS only the framework binary, in a Versions/A layout
+      # without symlinks so it survives the ZIP archive; on Linux the library
+      # under its SONAME; on Windows the DLL. The host's Qt libraries
+      # (HOST_QT_LIBRARIES) are never bundled.
+      - name: Bundle Qt libraries
+        if: env.BUNDLE_QT_FRAMEWORKS != ''
         run: |
           set -euo pipefail
-          # Qt6_DIR is .../lib/cmake/Qt6; the frameworks are in .../lib.
+          # Qt6_DIR is .../lib/cmake/Qt6; the libraries are in .../lib, the
+          # Windows DLLs in .../bin.
           qt6_dir=$(grep '^Qt6_DIR:' build/CMakeCache.txt | cut -d= -f2)
-          qt_lib=$(cd "$qt6_dir/../.." && pwd)
+          qt_root=$(cd "$qt6_dir/../../.." && pwd)
           for fw in $BUNDLE_QT_FRAMEWORKS; do
-            src=""
-            for candidate in "$qt_lib/$fw.framework/Versions/A/$fw" "$qt_lib/$fw.framework/$fw"; do
-              if [ -f "$candidate" ]; then src=$candidate; break; fi
-            done
-            if [ -z "$src" ]; then
-              echo "::error::$fw.framework not found in $qt_lib; is its module in qt_modules?"
-              exit 1
-            fi
-            dest="staging/$fw.framework/Versions/A"
-            mkdir -p "$dest"
-            # Qt's frameworks are universal; the plugin is arm64 only.
-            if lipo -archs "$src" | grep -qw x86_64; then
-              lipo "$src" -thin arm64 -output "$dest/$fw"
-            else
-              cp "$src" "$dest/$fw"
-            fi
-            for rp in $(otool -l "$dest/$fw" | awk '/cmd LC_RPATH/{found=1} found && /path /{print $2; found=0}' | sort -u); do
-              install_name_tool -delete_rpath "$rp" "$dest/$fw"
-            done
-            echo "Bundled $fw ($(wc -c < "$dest/$fw") bytes)"
+            case " $HOST_QT_LIBRARIES " in
+              *" $fw "*) echo "::error::$fw ships with LogSquirl; remove it from bundle_qt_frameworks"; exit 1 ;;
+            esac
+            module=${fw#Qt}
+            case "$RUNNER_OS" in
+              macOS)
+                src=""
+                for candidate in "$qt_root/lib/$fw.framework/Versions/A/$fw" "$qt_root/lib/$fw.framework/$fw"; do
+                  if [ -f "$candidate" ]; then src=$candidate; break; fi
+                done
+                [ -n "$src" ] || { echo "::error::$fw.framework not found in $qt_root/lib; is its module in qt_modules?"; exit 1; }
+                dest="staging/$fw.framework/Versions/A"
+                mkdir -p "$dest"
+                # Qt's frameworks are universal; the plugin is arm64 only.
+                if lipo -archs "$src" | grep -qw x86_64; then
+                  lipo "$src" -thin arm64 -output "$dest/$fw"
+                else
+                  cp "$src" "$dest/$fw"
+                fi
+                for rp in $(otool -l "$dest/$fw" | awk '/cmd LC_RPATH/{found=1} found && /path /{print $2; found=0}' | sort -u); do
+                  install_name_tool -delete_rpath "$rp" "$dest/$fw"
+                done
+                bundled="$dest/$fw"
+                ;;
+              Linux)
+                # The file the dynamic linker looks for is the SONAME; -L
+                # copies the library, not the symlink.
+                src="$qt_root/lib/libQt6$module.so.6"
+                [ -f "$src" ] || { echo "::error::$src not found; is its module in qt_modules?"; exit 1; }
+                bundled="staging/libQt6$module.so.6"
+                cp -L "$src" "$bundled"
+                # The plugin's RUNPATH is $ORIGIN, so the linker finds it
+                # there; its own dependencies are the host's Qt.
+                # shellcheck disable=SC2016 # $ORIGIN is for the dynamic linker
+                patchelf --set-rpath '$ORIGIN' "$bundled"
+                ;;
+              Windows)
+                # Windows resolves a plugin's DLL imports from the directory
+                # the plugin was loaded from only if the host adds that
+                # directory to the DLL search path before loading it.
+                src="$qt_root/bin/Qt6$module.dll"
+                [ -f "$src" ] || { echo "::error::$src not found; is its module in qt_modules?"; exit 1; }
+                bundled="staging/Qt6$module.dll"
+                cp "$src" "$bundled"
+                ;;
+            esac
+            echo "Bundled $fw as ${bundled#staging/} ($(wc -c < "$bundled") bytes)"
           done
+
+      # The plugin's RUNPATH points into the runner's Qt; on a user machine it
+      # finds the host's Qt through the already loaded libraries and bundled
+      # ones in its own directory.
+      - name: Fix the Linux RUNPATH
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC2016 # $ORIGIN is for the dynamic linker
+          patchelf --set-rpath '$ORIGIN' "staging/$LIB_FILE"
+          readelf -d "staging/$LIB_FILE" | grep -E 'RPATH|RUNPATH'
+
+      # Every Qt library the plugin links is one the host ships or one the
+      # package carries; anything else fails to load on a user machine while
+      # CI, with the whole Qt installed, stays green.
+      - name: Check the Qt libraries the plugin links
+        run: |
+          set -euo pipefail
+          case "$RUNNER_OS" in
+            macOS) linked=$(otool -L "staging/$LIB_FILE" | grep -oE '@rpath/Qt[A-Za-z0-9]+\.framework' | sed -E 's|@rpath/(Qt[A-Za-z0-9]+)\.framework|\1|') ;;
+            Linux) linked=$(readelf -d "staging/$LIB_FILE" | grep -oE 'libQt6[A-Za-z0-9]+\.so' | sed -E 's|libQt6([A-Za-z0-9]+)\.so|Qt\1|') ;;
+            Windows) linked=$(dumpbin -nologo -dependents "staging/$LIB_FILE" | grep -oiE 'Qt6[A-Za-z0-9]+\.dll' | sed -E 's|Qt6([A-Za-z0-9]+)\.dll|Qt\1|I') ;;
+          esac
+          status=0
+          # Qt library names are single words.
+          # shellcheck disable=SC2013
+          for lib in $(sort -u <<<"$linked"); do
+            case " $HOST_QT_LIBRARIES " in
+              *" $lib "*) echo "host     $lib" ;;
+              *)
+                case " $BUNDLE_QT_FRAMEWORKS " in
+                  *" $lib "*) echo "bundled  $lib" ;;
+                  *) echo "::error::$LIB_FILE links $lib, which LogSquirl does not ship; add it to bundle_qt_frameworks in .github/plugin-ci.json"; status=1 ;;
+                esac
+                ;;
+            esac
+          done
+          exit $status
 
       # Nothing in the package may point into the runner: such a path works in
       # CI and fails on every user machine.
       - name: Check the package for runner paths
-        if: runner.os == 'macOS'
+        if: runner.os != 'Windows'
         run: |
           set -euo pipefail
           status=0
           while IFS= read -r -d '' f; do
-            if file "$f" | grep -q 'Mach-O' && otool -lL "$f" | grep -E '/Users/runner|/opt/hostedtoolcache|/Users/[^/]+/work'; then
+            case "$RUNNER_OS" in
+              macOS) file "$f" | grep -q 'Mach-O' || continue; paths=$(otool -lL "$f") ;;
+              Linux) file "$f" | grep -q 'ELF' || continue; paths=$(readelf -d "$f") ;;
+            esac
+            if grep -E '/Users/runner|/home/runner|/opt/hostedtoolcache|/Users/[^/]+/work' <<<"$paths"; then
               echo "::error::$f references a runner path"
               status=1
             fi

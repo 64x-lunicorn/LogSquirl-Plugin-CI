@@ -248,8 +248,10 @@ jobs:
 
   # ── Job 2: Sign and notarize macOS ─────────────────────────────────────
   # The only job holding the Apple secrets, and only through the plugin
-  # repository's `release` environment. A missing secret or identity fails
-  # it: a release never ships an unsigned macOS package.
+  # repository's `release` environment; the caller has to pass
+  # `secrets: inherit`, or they resolve to empty strings here. A missing
+  # secret or identity fails it: a release never ships an unsigned macOS
+  # package.
   sign-mac:
     name: Sign macOS
     needs: prepare

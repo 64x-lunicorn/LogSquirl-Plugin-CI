@@ -39,3 +39,9 @@ jobs:
     with:
       tag: ${{ inputs.tag }}
       ci-run-id: ${{ inputs.ci-run-id }}
+    # Without it, the secrets of the `release` environment that the Sign macOS
+    # job declares resolve to empty strings in the called workflow, although
+    # the documentation suggests `environment:` there is enough
+    # (actions/runner#4453). The plugin has no repository or organisation
+    # secrets, and the called workflow is this organisation's, pinned by SHA.
+    secrets: inherit # zizmor: ignore[secrets-inherit]

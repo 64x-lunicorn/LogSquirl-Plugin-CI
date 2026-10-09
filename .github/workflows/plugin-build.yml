@@ -7,7 +7,9 @@ name: "Plugin CI Build"
 #   plugin.json              id, version, library, type, api_version, icon
 #   .github/plugin-ci.json   host_ref (the LogSquirl release the plugin is built
 #                            against), qt_modules, bundle_qt_frameworks
-#                            (Qt libraries the package carries on every platform)
+#                            (Qt libraries the package carries on every platform),
+#                            package_files (files of the repository the package
+#                            carries beside the library)
 #
 # host_ref decides the Qt version and the plugin API header: a plugin is built
 # with the Qt of that LogSquirl release, and its vendored logsquirl_plugin_api.h
@@ -52,6 +54,7 @@ jobs:
       qt-version: ${{ steps.host.outputs.qt-version }}
       qt-modules: ${{ steps.meta.outputs.qt-modules }}
       bundle-qt-frameworks: ${{ steps.meta.outputs.bundle-qt-frameworks }}
+      package-files: ${{ steps.meta.outputs.package-files }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -103,9 +106,9 @@ jobs:
           fi
 
           # A misspelt key would silently drop what it configures.
-          unknown=$(jq -r 'keys - ["host_ref", "qt_modules", "bundle_qt_frameworks"] | join(", ")' .github/plugin-ci.json)
+          unknown=$(jq -r 'keys - ["host_ref", "qt_modules", "bundle_qt_frameworks", "package_files"] | join(", ")' .github/plugin-ci.json)
           if [ -n "$unknown" ]; then
-            fail .github/plugin-ci.json "unknown keys: $unknown (known: host_ref, qt_modules, bundle_qt_frameworks)"
+            fail .github/plugin-ci.json "unknown keys: $unknown (known: host_ref, qt_modules, bundle_qt_frameworks, package_files)"
           fi
 
           host_ref=$(jq -r '.host_ref // ""' .github/plugin-ci.json)
@@ -120,6 +123,66 @@ jobs:
             [[ $fw =~ ^Qt[A-Za-z0-9]+$ ]] || fail .github/plugin-ci.json "bundle_qt_frameworks entry '$fw' is not a Qt framework name (e.g. QtSerialPort)"
           done
 
+          # package_files: files of the repository the package carries beside
+          # the library, under their base names: staging/ stays flat, so the
+          # archive's layout never depends on the repository's. Each must be a
+          # regular file tracked at this commit, named by a relative path that
+          # stays inside the repository. The character set keeps the list safe
+          # to split on spaces and free of glob characters on every runner. No
+          # two files in the package may share a name, ignoring case: the
+          # archives are unpacked on macOS and Windows, too.
+          package_files=""
+          if ! jq -e '(.package_files // []) | type == "array" and all(.[]; type == "string")' \
+            .github/plugin-ci.json > /dev/null; then
+            fail .github/plugin-ci.json "package_files must be a list of paths"
+          else
+            taken=("lib$library.so" "lib$library.dylib" "$library.dll" plugin.json)
+            if [ -n "$icon" ]; then taken+=("${icon##*/}"); fi
+            while IFS= read -r path; do
+              if ! [[ $path =~ ^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$ ]]; then
+                fail .github/plugin-ci.json "package_files entry '$path' is not a relative path of letters, digits, '.', '_' and '-' separated by '/'"
+                continue
+              fi
+              if [[ /$path/ == */./* || /$path/ == */../* ]]; then
+                fail .github/plugin-ci.json "package_files entry '$path' has a '.' or '..' segment"
+                continue
+              fi
+              # One line "<mode> <object> <stage>\t<path>" for a tracked file;
+              # nothing for an untracked one, several for a directory.
+              entry=$(git ls-files -s -- ":(literal)$path")
+              if [ "${entry#*$'\t'}" != "$path" ]; then
+                fail .github/plugin-ci.json "package_files entry '$path' is not a file tracked by git"
+                continue
+              fi
+              mode=${entry%% *}
+              if [ "$mode" != 100644 ] && [ "$mode" != 100755 ]; then
+                fail .github/plugin-ci.json "package_files entry '$path' is not a regular file (git mode $mode)"
+                continue
+              fi
+              # The release refuses empty files in the macOS archive.
+              if [ ! -s "$path" ]; then
+                fail .github/plugin-ci.json "package_files entry '$path' is empty"
+                continue
+              fi
+              name=${path##*/}
+              lname=$(tr '[:upper:]' '[:lower:]' <<<"$name")
+              case "$lname" in
+                libqt6*.so.6 | qt6*.dll | qt*.framework)
+                  fail .github/plugin-ci.json "package_files entry '$path' is named like a bundled Qt library"
+                  continue
+                  ;;
+              esac
+              for t in "${taken[@]}"; do
+                if [ "$(tr '[:upper:]' '[:lower:]' <<<"$t")" = "$lname" ]; then
+                  fail .github/plugin-ci.json "package_files entry '$path' would be staged as $name, but the package already holds $t"
+                  continue 2
+                fi
+              done
+              taken+=("$name")
+              package_files+="${package_files:+ }$path"
+            done < <(jq -r '(.package_files // [])[]' .github/plugin-ci.json)
+          fi
+
           [ "$errors" -eq 0 ] || exit 1
           echo "$id $version: library $library, type $type, host $host_ref"
           {
@@ -129,6 +192,7 @@ jobs:
             echo "host-ref=$host_ref"
             echo "qt-modules=$qt_modules"
             echo "bundle-qt-frameworks=$bundle"
+            echo "package-files=$package_files"
           } >> "$GITHUB_OUTPUT"
 
       # The vendored header is the host release's, byte for byte, and
@@ -247,6 +311,7 @@ jobs:
       PLUGIN_TYPE: ${{ needs.setup.outputs.type }}
       ICON: ${{ needs.setup.outputs.icon }}
       BUNDLE_QT_FRAMEWORKS: ${{ needs.setup.outputs.bundle-qt-frameworks }}
+      PACKAGE_FILES: ${{ needs.setup.outputs.package-files }}
     defaults:
       run:
         shell: bash
@@ -339,6 +404,12 @@ jobs:
           if [ -n "$ICON" ]; then
             cp "$ICON" staging/
           fi
+          # Checked in Setup: relative paths without spaces or glob characters,
+          # whose base names are unique in the package.
+          for f in $PACKAGE_FILES; do
+            cp -- "$f" staging/
+            echo "Staged $f as ${f##*/}"
+          done
 
       # The Qt path of the runner is baked into the dylib and does not exist
       # on user machines. The plugin resolves Qt from the host app bundle

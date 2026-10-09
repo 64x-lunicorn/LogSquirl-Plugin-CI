@@ -149,6 +149,37 @@ jobs:
             echo "api-version=$(jq -r .api_version plugin.json)"
           } >> "$GITHUB_OUTPUT"
 
+      # A plugin built against a LogSquirl pre-release needs a plugin API that
+      # users of the final releases do not have yet, or one that may still
+      # change before the final release; it is never published. Pre-release
+      # by its tag form (vYY.MM.P-betaN) or by the host release's flag.
+      - name: Require a final LogSquirl release in host_ref
+        id: host-ref
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HOST_REPO: 64x-lunicorn/LogSquirl
+        run: |
+          set -euo pipefail
+          host_ref=$(jq -r '.host_ref // ""' .github/plugin-ci.json)
+          if ! [[ $host_ref =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-.+)?$ ]]; then
+            echo "::error file=.github/plugin-ci.json::host_ref '$host_ref' is not a LogSquirl release tag"
+            exit 1
+          fi
+          prerelease=false
+          if [[ $host_ref == *-* ]]; then
+            prerelease=true
+          elif ! release=$(gh api "repos/$HOST_REPO/releases/tags/$host_ref"); then
+            echo "::error file=.github/plugin-ci.json::host_ref '$host_ref' is not a published release of $HOST_REPO"
+            exit 1
+          elif [ "$(jq -r .prerelease <<<"$release")" != false ]; then
+            prerelease=true
+          fi
+          if [ "$prerelease" = true ]; then
+            echo "::error file=.github/plugin-ci.json::host_ref $host_ref is a LogSquirl pre-release. A plugin built against it is not published: switch host_ref to the final LogSquirl release (and refresh include/logsquirl_plugin_api.h with scripts/sync-plugin.sh) on the default branch before tagging."
+            exit 1
+          fi
+          echo "Built against LogSquirl $host_ref, a final release"
+
       # Only a successful CI Build that ran for a push to the default branch
       # and built the tagged commit may be released: pull request builds come
       # from unreviewed branches, and a build of another commit is not what

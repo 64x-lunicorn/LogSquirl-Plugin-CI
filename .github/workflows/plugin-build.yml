@@ -13,7 +13,9 @@ name: "Plugin CI Build"
 #
 # host_ref decides the Qt version and the plugin API header: a plugin is built
 # with the Qt of that LogSquirl release, and its vendored logsquirl_plugin_api.h
-# must be that release's header byte for byte.
+# must be that release's header byte for byte. It may be a LogSquirl
+# pre-release (vYY.MM.P-betaN / -rcN) to build against a plugin API that is not
+# released yet; CI Release refuses to publish such a build.
 #
 # The packages are unsigned. CI Release (plugin-release.yml) publishes exactly
 # these artifacts of the push run on the default branch for the tagged commit;
@@ -111,9 +113,16 @@ jobs:
             fail .github/plugin-ci.json "unknown keys: $unknown (known: host_ref, qt_modules, bundle_qt_frameworks, package_files)"
           fi
 
+          # A LogSquirl release tag, final or pre-release in LogSquirl's form
+          # (v26.11.0-beta1, v26.11.0-rc1). CI Release refuses to publish a
+          # plugin built against a pre-release.
           host_ref=$(jq -r '.host_ref // ""' .github/plugin-ci.json)
-          [[ $host_ref =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
-            fail .github/plugin-ci.json "host_ref '$host_ref' must be a LogSquirl release tag (vYY.MM.PATCH)"
+          host_prerelease=false
+          if [[ $host_ref =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-(beta|rc)[1-9][0-9]*)?$ ]]; then
+            [[ $host_ref != *-* ]] || host_prerelease=true
+          else
+            fail .github/plugin-ci.json "host_ref '$host_ref' must be a LogSquirl release tag (vYY.MM.PATCH, or vYY.MM.PATCH-betaN / -rcN for a pre-release)"
+          fi
           qt_modules=$(jq -r '(.qt_modules // []) | join(" ")' .github/plugin-ci.json)
           bundle=$(jq -r '(.bundle_qt_frameworks // []) | join(" ")' .github/plugin-ci.json)
           for m in $qt_modules; do
@@ -190,6 +199,7 @@ jobs:
             echo "type=$type"
             echo "icon=$icon"
             echo "host-ref=$host_ref"
+            echo "host-prerelease=$host_prerelease"
             echo "qt-modules=$qt_modules"
             echo "bundle-qt-frameworks=$bundle"
             echo "package-files=$package_files"
@@ -203,11 +213,22 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           HOST_REF: ${{ steps.meta.outputs.host-ref }}
+          HOST_PRERELEASE: ${{ steps.meta.outputs.host-prerelease }}
         run: |
           set -euo pipefail
           host_file() {
             gh api -H "Accept: application/vnd.github.raw" "repos/$HOST_REPO/contents/$1?ref=$HOST_REF"
           }
+
+          # A published release of the host, not just a tag: a draft or a
+          # deleted release is not something users run.
+          if ! release=$(gh api "repos/$HOST_REPO/releases/tags/$HOST_REF"); then
+            echo "::error file=.github/plugin-ci.json::host_ref '$HOST_REF' is not a published release of $HOST_REPO"
+            exit 1
+          fi
+          if [ "$HOST_PRERELEASE" = true ] || [ "$(jq -r .prerelease <<<"$release")" = true ]; then
+            echo "::warning file=.github/plugin-ci.json::host_ref $HOST_REF is a LogSquirl pre-release: CI Release will refuse to publish this plugin until host_ref is the final release"
+          fi
           header="$RUNNER_TEMP/logsquirl_plugin_api.h"
           host_file src/plugins/include/logsquirl_plugin_api.h > "$header"
           if ! cmp -s "$header" include/logsquirl_plugin_api.h; then

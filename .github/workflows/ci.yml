@@ -152,7 +152,8 @@ jobs:
         with:
           persist-credentials: false
 
-      # The Setup step of plugin-build.yml, read from the workflow by yq (on
-      # the runner image), against a valid fixture plugin and broken ones.
+      # The Setup steps of plugin-build.yml and the host_ref step of
+      # plugin-release.yml, read from the workflows by yq (on the runner
+      # image), against a valid fixture plugin and broken ones.
       - name: Check plugin.json and .github/plugin-ci.json fixtures
         run: scripts/test-metadata-check.sh

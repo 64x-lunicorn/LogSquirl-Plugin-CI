@@ -60,6 +60,11 @@ Per plugin:
 
   `host_ref` is the LogSquirl release the plugin is built against: CI takes
   that release's Qt version and requires its plugin API header byte for byte.
+  Setup fails unless it is a published release of 64x-lunicorn/LogSquirl.
+  It may be a LogSquirl pre-release, in LogSquirl's tag form `vYY.MM.P-betaN`
+  or `vYY.MM.P-rcN` (such as `v26.11.0-beta1`), to build a plugin that needs a
+  plugin API not released yet; the build then warns that it cannot be
+  released (see [Releasing a plugin](#releasing-a-plugin)).
   `qt_modules` are extra aqt modules to install, `bundle_qt_frameworks` the
   Qt libraries the package carries because the host app does not ship them:
   the framework on macOS, `libQt6<Name>.so.6` on Linux, `Qt6<Name>.dll` on
@@ -92,6 +97,11 @@ Per plugin:
 
 1. On `main`: set `version` in `plugin.json` and `project(VERSION)` in
    `CMakeLists.txt`, add the `## [X.Y.Z]` section to `CHANGELOG.md`, merge.
+   `host_ref` must be a final LogSquirl release: CI Release refuses to publish
+   a plugin whose `host_ref` is a pre-release (by its `-betaN` / `-rcN` form or
+   the host release's pre-release flag), whatever the plugin's own tag. Once
+   that LogSquirl release is out, set `host_ref` to it and refresh the header
+   (`scripts/sync-plugin.sh <plugin-dir>`) before tagging.
 2. Push the tag `vX.Y.Z` (or `vX.Y.Z-beta.N`) on that commit. CI Release waits
    for CI Build of the commit if it is still running.
 3. Commit the `releases.json` from the run's summary (artifact
@@ -102,7 +112,8 @@ Per plugin:
 1. Change the shared workflows or `template/` here; CI checks actionlint,
    shellcheck, zizmor, pins, the action allowlist, the sync round trip and,
    with `scripts/test-metadata-check.sh` (needs yq), the Setup step's checks
-   of `plugin.json` and `.github/plugin-ci.json` against fixture plugins.
+   of `plugin.json` and `.github/plugin-ci.json` against fixture plugins, and
+   the `host_ref` checks of Setup and CI Release against a stub LogSquirl.
 2. A new third-party action goes into `ALLOWED_ACTIONS` in
    `scripts/repo-settings.sh`, applied to every plugin before the release.
 3. Tag a release `vX.Y.Z`. Dependabot in each plugin proposes the new pins,

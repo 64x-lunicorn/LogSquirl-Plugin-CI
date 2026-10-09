@@ -63,7 +63,10 @@ Per plugin:
   `qt_modules` are extra aqt modules to install, `bundle_qt_frameworks` the
   Qt libraries the package carries because the host app does not ship them:
   the framework on macOS, `libQt6<Name>.so.6` on Linux, `Qt6<Name>.dll` on
-  Windows. Both may be omitted; any other key is an error.
+  Windows. `package_files` are files of the repository the package carries
+  beside the library, such as a Log Format definition
+  (`"package_files": ["formats/tcpdump_log.json"]`). All three may be
+  omitted; any other key is an error.
 
   LogSquirl ships QtCore, QtGui, QtWidgets, QtConcurrent, QtNetwork, QtXml
   (and QtDBus on Linux, where a bundled QtDBus is left out). CI fails a
@@ -72,6 +75,16 @@ Per plugin:
   not load on a user machine. On Windows, a bundled DLL is found only by a
   LogSquirl that adds the plugin's directory to the DLL search path when it
   loads the plugin.
+
+  Each `package_files` entry lands in the package under its base name, next
+  to the library and `plugin.json`, on every platform: the package stays flat
+  whatever the repository's layout. Setup fails the build unless every entry
+  is a relative path inside the repository (letters, digits, `.`, `_` and `-`
+  separated by `/`; no `.` or `..` segment), names a regular, non-empty file
+  tracked by git (no directory, symlink or submodule), and has a base name
+  that nothing else in the package has, ignoring case: not the library,
+  `plugin.json`, the icon, a bundled Qt library or another entry. The files
+  are copied as they are: they are not signed, so they are data, not code.
 - `CHANGELOG.md` with one `## [X.Y.Z]` section per release: the release notes.
 - `releases.json`: the plugin's catalog entry list.
 
@@ -87,7 +100,9 @@ Per plugin:
 ## Changing the shared setup
 
 1. Change the shared workflows or `template/` here; CI checks actionlint,
-   shellcheck, zizmor, pins, the action allowlist and the sync round trip.
+   shellcheck, zizmor, pins, the action allowlist, the sync round trip and,
+   with `scripts/test-metadata-check.sh` (needs yq), the Setup step's checks
+   of `plugin.json` and `.github/plugin-ci.json` against fixture plugins.
 2. A new third-party action goes into `ALLOWED_ACTIONS` in
    `scripts/repo-settings.sh`, applied to every plugin before the release.
 3. Tag a release `vX.Y.Z`. Dependabot in each plugin proposes the new pins,

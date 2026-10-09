@@ -2,8 +2,9 @@ name: "CI"
 
 # Checks this repository before a release reaches the plugins: the shared
 # workflows and the rendered template/ workflows lint clean, every action is
-# pinned and allowlisted, zizmor finds nothing of high severity, and
-# sync-plugin.sh round-trips.
+# pinned and allowlisted, zizmor finds nothing of high severity,
+# sync-plugin.sh round-trips, and the plugin metadata check accepts and
+# rejects what it should.
 on:
   push:
     branches: [main]
@@ -139,3 +140,19 @@ jobs:
             "$plugin/.github/workflows/ci-build.yml"
           expect_drift "pins to two releases"
           echo "sync-plugin.sh round-trips"
+
+  metadata:
+    name: Metadata check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The Setup step of plugin-build.yml, read from the workflow by yq (on
+      # the runner image), against a valid fixture plugin and broken ones.
+      - name: Check plugin.json and .github/plugin-ci.json fixtures
+        run: scripts/test-metadata-check.sh

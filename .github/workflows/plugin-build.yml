@@ -9,7 +9,8 @@ name: "Plugin CI Build"
 #                            against), qt_modules, bundle_qt_frameworks
 #                            (Qt libraries the package carries on every platform),
 #                            package_files (files of the repository the package
-#                            carries beside the library)
+#                            carries beside the library), sanitizers (also run
+#                            the tests under ASan and UBSan on Linux)
 #
 # host_ref decides the Qt version and the plugin API header: a plugin is built
 # with the Qt of that LogSquirl release, and its vendored logsquirl_plugin_api.h
@@ -57,6 +58,7 @@ jobs:
       qt-modules: ${{ steps.meta.outputs.qt-modules }}
       bundle-qt-frameworks: ${{ steps.meta.outputs.bundle-qt-frameworks }}
       package-files: ${{ steps.meta.outputs.package-files }}
+      sanitizers: ${{ steps.meta.outputs.sanitizers }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -108,9 +110,16 @@ jobs:
           fi
 
           # A misspelt key would silently drop what it configures.
-          unknown=$(jq -r 'keys - ["host_ref", "qt_modules", "bundle_qt_frameworks", "package_files"] | join(", ")' .github/plugin-ci.json)
+          unknown=$(jq -r 'keys - ["host_ref", "qt_modules", "bundle_qt_frameworks", "package_files", "sanitizers"] | join(", ")' .github/plugin-ci.json)
           if [ -n "$unknown" ]; then
-            fail .github/plugin-ci.json "unknown keys: $unknown (known: host_ref, qt_modules, bundle_qt_frameworks, package_files)"
+            fail .github/plugin-ci.json "unknown keys: $unknown (known: host_ref, qt_modules, bundle_qt_frameworks, package_files, sanitizers)"
+          fi
+
+          # A string "true" would read as switched on and a 1 as switched off;
+          # only a JSON boolean says which.
+          sanitizers=$(jq -r '(.sanitizers // false) | if type == "boolean" then tostring else "invalid" end' .github/plugin-ci.json)
+          if [ "$sanitizers" = invalid ]; then
+            fail .github/plugin-ci.json "sanitizers must be true or false"
           fi
 
           # A LogSquirl release tag, final or pre-release in LogSquirl's form
@@ -203,6 +212,7 @@ jobs:
             echo "qt-modules=$qt_modules"
             echo "bundle-qt-frameworks=$bundle"
             echo "package-files=$package_files"
+            echo "sanitizers=$sanitizers"
           } >> "$GITHUB_OUTPUT"
 
       # The vendored header is the host release's, byte for byte, and
@@ -599,12 +609,82 @@ jobs:
           if-no-files-found: error
 
   # -----------------------------------------------------------------------
+  # Sanitizers — with "sanitizers": true in .github/plugin-ci.json, the tests
+  # also run in Debug under AddressSanitizer and UndefinedBehaviorSanitizer
+  # on Linux x64. A sanitizer report fails its test, and the test the job.
+  # Nothing of this build is packaged.
+  # -----------------------------------------------------------------------
+  sanitizers:
+    name: ASan and UBSan (Linux x64)
+    needs: setup
+    if: needs.setup.outputs.sanitizers == 'true'
+    runs-on: ubuntu-24.04
+    # A cold Qt install, the sanitized Debug build and its test run stay
+    # well below this.
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    env:
+      # catch_discover_tests and the like run the sanitized test programs at
+      # build time, too, so the options hold for the whole job. Qt's own
+      # one-time allocations would make every test report leaks.
+      ASAN_OPTIONS: detect_leaks=0
+      UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+      SANITIZE: -fsanitize=address,undefined
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@a9c63c7c123f3069cff414e7e482d95dfa9d8125 # v4.4.1
+        with:
+          version: ${{ needs.setup.outputs.qt-version }}
+          arch: linux_gcc_64
+          modules: ${{ needs.setup.outputs.qt-modules }}
+          cache: true
+          # Pinned to a commit as in the build job above, which says why.
+          aqtsource: git+https://github.com/miurahr/aqtinstall.git@076e1659807d0b362a3ed684d54c2e9c775eb9c7
+          py7zrversion: ==1.1.0
+
+      - name: Install Ninja
+        uses: seanmiddleditch/gha-setup-ninja@3b1f8f94a2f8254bd26914c4ab9474d4f0015f67 # v6
+
+      # ASan's shadow memory does not fit every address layout of the
+      # kernel's highest mmap randomisation; 28 bits is what it supports.
+      - name: Limit mmap randomisation for ASan
+        run: sudo sysctl -w vm.mmap_rnd_bits=28
+
+      # -fno-sanitize-recover=undefined makes an undefined behaviour report
+      # end its test as an ASan report does.
+      - name: Configure
+        run: |
+          cmake -B build -S . -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=ON \
+            -DCMAKE_C_FLAGS="$SANITIZE -fno-sanitize-recover=undefined -fno-omit-frame-pointer" \
+            -DCMAKE_CXX_FLAGS="$SANITIZE -fno-sanitize-recover=undefined -fno-omit-frame-pointer" \
+            -DCMAKE_EXE_LINKER_FLAGS="$SANITIZE" \
+            -DCMAKE_SHARED_LINKER_FLAGS="$SANITIZE" \
+            -DCMAKE_MODULE_LINKER_FLAGS="$SANITIZE"
+
+      - name: Build
+        run: cmake --build build
+
+      # 4 at a time: a runner starting every sanitized test at once is killed.
+      - name: Test
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: ctest --test-dir build --output-on-failure --no-tests=error -j 4
+
+  # -----------------------------------------------------------------------
   # CI passed — the one check a branch ruleset requires.
   # -----------------------------------------------------------------------
   ci-passed:
     name: CI passed
     if: always()
-    needs: [setup, format, build]
+    needs: [setup, format, build, sanitizers]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions: {}
@@ -612,10 +692,16 @@ jobs:
       - name: Require every job to succeed
         env:
           NEEDS: ${{ toJSON(needs) }}
+          SANITIZERS: ${{ needs.setup.outputs.sanitizers }}
         run: |
           set -euo pipefail
           jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<<"$NEEDS"
-          if ! jq -e 'all(.[]; .result == "success")' <<<"$NEEDS" > /dev/null; then
+          # Sanitizers is skipped, and that is a pass, only for a plugin that
+          # does not switch it on.
+          if ! jq -e --arg sanitizers "$SANITIZERS" 'all(to_entries[];
+              .value.result == "success" or
+              (.key == "sanitizers" and .value.result == "skipped" and $sanitizers == "false"))' \
+            <<<"$NEEDS" > /dev/null; then
             echo "::error::A CI job did not succeed"
             exit 1
           fi

@@ -21,7 +21,9 @@ through Dependabot.
 | `workflow-security.yml` | [`plugin-security.yml`](.github/workflows/plugin-security.yml) | zizmor (code scanning, fails on high severity) and the SHA pin check. |
 
 The model is LogSquirl's own CI: SHA-pinned actions, `permissions: {}` by
-default, `persist-credentials: false`, timeouts on every job, signing secrets
+default, `persist-credentials: false`, timeouts on every job, a default branch
+that takes only up-to-date pull requests that pass **CI / CI passed**
+(squashed or rebased, no review required: `scripts/repo-settings.sh`), signing secrets
 only in a `release` environment that admits `v*` tags, and releases that ship
 the build that passed CI.
 

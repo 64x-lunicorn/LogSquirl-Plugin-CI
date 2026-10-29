@@ -120,6 +120,9 @@ expect_fail() {
 expect_pass '{"host_ref": "v26.10.0"}' '' 'host-prerelease=false'
 expect_pass '{"host_ref": "v26.11.0-beta1"}' '' 'host-prerelease=true'
 expect_pass '{"host_ref": "v26.11.0-rc12"}' '' 'host-prerelease=true'
+expect_pass '{"host_ref": "v26.10.0"}' '' 'sanitizers=false'
+expect_pass '{"host_ref": "v26.10.0", "sanitizers": false}' '' 'sanitizers=false'
+expect_pass '{"host_ref": "v26.10.0", "sanitizers": true}' '' 'sanitizers=true'
 expect_pass '{"host_ref": "v26.10.0", "package_files": []}' ''
 expect_pass '{"host_ref": "v26.10.0", "package_files": ["formats/fixture_log.json"]}' 'formats/fixture_log.json'
 expect_pass '{"host_ref": "v26.10.0", "package_files": ["formats/fixture_log.json", "formats/other.json"]}' \
@@ -129,6 +132,9 @@ for ref in '' main 26.10.0 v26.10 v26.10.0.1 v26.11.0-beta v26.11.0-beta0 v26.11
   v26.11.0-BETA1 v26.11.0-alpha1 v26.11.0-beta1-hotfix 'v26.10.0 '; do
   expect_fail "{\"host_ref\": \"$ref\"}"
 done
+expect_fail '{"host_ref": "v26.10.0", "sanitizers": "true"}'
+expect_fail '{"host_ref": "v26.10.0", "sanitizers": 1}'
+expect_fail '{"host_ref": "v26.10.0", "sanitiser": true}'
 expect_fail '{"host_ref": "v26.10.0", "package_file": ["formats/fixture_log.json"]}'
 expect_fail '{"host_ref": "v26.10.0", "package_files": "formats/fixture_log.json"}'
 expect_fail '{"host_ref": "v26.10.0", "package_files": [1]}'

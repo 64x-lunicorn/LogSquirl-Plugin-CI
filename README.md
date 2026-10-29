@@ -16,7 +16,7 @@ through Dependabot.
 
 | Caller in the plugin | Shared workflow | What it does |
 |---|---|---|
-| `ci-build.yml` | [`plugin-build.yml`](.github/workflows/plugin-build.yml) | Checks `plugin.json` against `CMakeLists.txt` and the LogSquirl release it targets, checks formatting, builds and tests on Linux x64, macOS arm64 and Windows x64, checks the exported entry points, packages each platform unsigned. One required check: **CI / CI passed**. |
+| `ci-build.yml` | [`plugin-build.yml`](.github/workflows/plugin-build.yml) | Checks `plugin.json` against `CMakeLists.txt` and the LogSquirl release it targets, checks formatting, builds and tests on Linux x64, macOS arm64 and Windows x64 (optionally also under ASan and UBSan on Linux), checks the exported entry points, packages each platform unsigned. One required check: **CI / CI passed**. |
 | `ci-release.yml` | [`plugin-release.yml`](.github/workflows/plugin-release.yml) | On a `v*` tag: publishes the CI Build artifacts of the tagged commit (no rebuild), signs and notarizes macOS in the `release` environment, adds a checksum file, provenance attestations and a Sigstore signature, and hands over the `releases.json` entry with real SHA-256s. |
 | `workflow-security.yml` | [`plugin-security.yml`](.github/workflows/plugin-security.yml) | zizmor (code scanning, fails on high severity) and the SHA pin check. |
 
@@ -70,8 +70,13 @@ Per plugin:
   the framework on macOS, `libQt6<Name>.so.6` on Linux, `Qt6<Name>.dll` on
   Windows. `package_files` are files of the repository the package carries
   beside the library, such as a Log Format definition
-  (`"package_files": ["formats/tcpdump_log.json"]`). All three may be
-  omitted; any other key is an error.
+  (`"package_files": ["formats/tcpdump_log.json"]`). `"sanitizers": true`
+  adds the job **ASan and UBSan (Linux x64)**: the tests built in Debug under
+  AddressSanitizer and UndefinedBehaviorSanitizer, where any report fails the
+  build (leak detection is off, Qt's one-time allocations would show as
+  leaks). All four may be omitted; any other key is an error. A plugin has no
+  workflows of its own: what it needs beyond these goes into the shared
+  workflows.
 
   LogSquirl ships QtCore, QtGui, QtWidgets, QtConcurrent, QtNetwork, QtXml
   (and QtDBus on Linux, where a bundled QtDBus is left out). CI fails a

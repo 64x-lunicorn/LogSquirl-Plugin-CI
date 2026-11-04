@@ -3,8 +3,13 @@
 # declare themselves, the same as LogSquirl's (.github/scripts/repo-settings.sh
 # there): read-only GITHUB_TOKEN by default, no pull requests approved by
 # workflows, an explicit allowlist of third-party actions, SHA pinning
-# required, protected release tags, and a `release` environment that admits
-# only v* tags and holds the signing secrets.
+# required, a protected default branch, protected release tags, and a
+# `release` environment that admits only v* tags and holds the signing secrets.
+#
+# The default branch changes only through pull requests that pass CI / CI
+# passed and are up to date, squashed or rebased (linear history). No review
+# is required: the maintainer is the only code owner and cannot approve their
+# own pull requests. Repository admins may bypass the rules in a pull request.
 #
 # Usage:
 #   scripts/repo-settings.sh <owner/repo> check    # report drift, exit 1 on any
@@ -45,6 +50,10 @@ ALLOWED_ACTIONS=(
 
 RELEASE_SECRETS=(MACOS_P12_FILE MACOS_P12_PASSWORD APPLE_ID APPLE_TEAM_ID APPLE_PASSWORD)
 TAG_RULESET_NAME="Protect release tags"
+BRANCH_RULESET_NAME="Protect main"
+# The one check the CI Build reports for the whole run; 15368 is GitHub Actions.
+REQUIRED_CHECK="CI / CI passed"
+ACTIONS_APP_ID=15368
 
 usage() {
   echo "usage: $0 <owner/repo> check|apply [--defer-sha-pinning] | $0 list-allowed" >&2
@@ -80,6 +89,43 @@ allowed_json() {
   printf '%s\n' "${ALLOWED_ACTIONS[@]}" | LC_ALL=C sort | jq -R . | jq -cs .
 }
 
+# The ids of the branch rulesets on the default branch, whatever their names:
+# apply takes over the first one instead of adding a second.
+branch_ruleset_ids() {
+  local id
+  for id in $(gh api "repos/$REPO/rulesets" --jq '.[] | select(.target == "branch") | .id'); do
+    gh api "repos/$REPO/rulesets/$id" --jq 'select(.conditions.ref_name.include | index("~DEFAULT_BRANCH")) | .id'
+  done
+}
+
+branch_ruleset_body() {
+  jq -n --arg name "$BRANCH_RULESET_NAME" --arg check "$REQUIRED_CHECK" --argjson app "$ACTIONS_APP_ID" '{
+    name: $name,
+    target: "branch",
+    enforcement: "active",
+    bypass_actors: [{actor_id: 5, actor_type: "RepositoryRole", bypass_mode: "pull_request"}],
+    conditions: {ref_name: {include: ["~DEFAULT_BRANCH"], exclude: []}},
+    rules: [
+      {type: "deletion"},
+      {type: "non_fast_forward"},
+      {type: "required_linear_history"},
+      {type: "pull_request", parameters: {
+        required_approving_review_count: 0,
+        require_code_owner_review: false,
+        dismiss_stale_reviews_on_push: false,
+        require_last_push_approval: false,
+        required_review_thread_resolution: false,
+        allowed_merge_methods: ["squash", "rebase"]
+      }},
+      {type: "required_status_checks", parameters: {
+        strict_required_status_checks_policy: true,
+        do_not_enforce_on_create: false,
+        required_status_checks: [{context: $check, integration_id: $app}]
+      }}
+    ]
+  }'
+}
+
 check() {
   local perms workflow selected ruleset_id env policies secrets
   perms=$(gh api "repos/$REPO/actions/permissions")
@@ -108,6 +154,21 @@ check() {
     report "tag ruleset enforcement" active "$(jq -r .enforcement <<<"$ruleset")"
     report "tag ruleset target" '["refs/tags/v*"]' "$(jq -c .conditions.ref_name.include <<<"$ruleset")"
     report "tag ruleset rules" '["creation","deletion","update"]' "$(jq -c '[.rules[].type] | sort' <<<"$ruleset")"
+  fi
+
+  local branch_ids
+  branch_ids=$(branch_ruleset_ids)
+  report "default branch rulesets" 1 "$(grep -c . <<<"$branch_ids" || true)"
+  if [ -n "$branch_ids" ]; then
+    # What apply writes, in the form GitHub returns it.
+    local shape='{name, enforcement, bypass_actors, conditions,
+      rules: [.rules[] | {type} + (if .parameters then {parameters: (.parameters | {
+        required_approving_review_count, require_code_owner_review, allowed_merge_methods,
+        strict_required_status_checks_policy,
+        required_status_checks: (.required_status_checks // null | if . then map({context, integration_id}) else null end)
+      } | with_entries(select(.value != null)))} else {} end)] | sort_by(.type)}'
+    report "default branch ruleset" "$(branch_ruleset_body | jq -cS "$shape")" \
+      "$(gh api "repos/$REPO/rulesets/$(head -1 <<<"$branch_ids")" | jq -cS "$shape")"
   fi
 
   if ! env=$(gh api "repos/$REPO/environments/release" 2>/dev/null); then
@@ -156,6 +217,13 @@ apply() {
     gh api -X POST "repos/$REPO/rulesets" --input - <<<"$body" > /dev/null
   else
     gh api -X PUT "repos/$REPO/rulesets/$ruleset_id" --input - <<<"$body" > /dev/null
+  fi
+
+  ruleset_id=$(branch_ruleset_ids | head -1)
+  if [ -z "$ruleset_id" ]; then
+    branch_ruleset_body | gh api -X POST "repos/$REPO/rulesets" --input - > /dev/null
+  else
+    branch_ruleset_body | gh api -X PUT "repos/$REPO/rulesets/$ruleset_id" --input - > /dev/null
   fi
 
   # The release environment admits v* tags and nothing else.

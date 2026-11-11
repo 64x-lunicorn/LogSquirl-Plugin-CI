@@ -351,6 +351,37 @@ jobs:
         with:
           persist-credentials: false
 
+      # install-qt-action's own install-deps runs apt-get on every run, and
+      # an Ubuntu mirror the runner cannot reach holds it until the job's
+      # timeout. This installs the same list, but only what the runner image
+      # lacks, with short network timeouts, so an unreachable mirror costs
+      # nothing when the image has everything and minutes, not the job, when
+      # it does not.
+      - name: Install Qt's Linux dependencies
+        if: runner.os == 'Linux'
+        timeout-minutes: 10
+        run: |
+          packages=(
+            build-essential libgl1-mesa-dev libgstreamer-gl1.0-0 libpulse-dev
+            libxcb-glx0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0
+            libxcb-render-util0 libxcb-render0 libxcb-shape0 libxcb-shm0
+            libxcb-sync1 libxcb-util1 libxcb-xfixes0 libxcb-xinerama0 libxcb1
+            libxkbcommon-dev libxkbcommon-x11-0 libxcb-xkb-dev libxcb-cursor0
+          )
+          missing=()
+          for package in "${packages[@]}"; do
+            dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -q 'install ok installed' \
+              || missing+=("$package")
+          done
+          if [ "${#missing[@]}" -eq 0 ]; then
+            echo "All of Qt's Linux dependencies are on the runner image."
+            exit 0
+          fi
+          echo "Installing: ${missing[*]}"
+          apt=(-o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20)
+          sudo apt-get "${apt[@]}" update -q
+          sudo apt-get "${apt[@]}" install -y "${missing[@]}"
+
       - name: Install Qt
         uses: jurplel/install-qt-action@b344308e4483fc892e0d27b3cd1b173ebdd95f06 # v4.5.0
         with:
@@ -358,6 +389,8 @@ jobs:
           arch: ${{ matrix.qt-arch }}
           modules: ${{ needs.setup.outputs.qt-modules }}
           cache: true
+          # Installed by the step above.
+          install-deps: false
           # The installer is pinned to a commit, as in LogSquirl's own CI: Qt
           # 6.11 split the Windows repository into one folder per compiler,
           # and aqtinstall 3.3.0 (the latest release) cannot find 6.11.x there.
@@ -460,11 +493,18 @@ jobs:
           install_name_tool -add_rpath @loader_path "$dylib"
           otool -l "$dylib" | grep -A2 LC_RPATH
 
+      # The runner image carries patchelf; apt only runs if it ever stops.
       - name: Install patchelf
         if: runner.os == 'Linux'
+        timeout-minutes: 10
         run: |
-          sudo apt-get update -q
-          sudo apt-get install -y --no-install-recommends patchelf
+          if command -v patchelf >/dev/null; then
+            patchelf --version
+            exit 0
+          fi
+          apt=(-o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20)
+          sudo apt-get "${apt[@]}" update -q
+          sudo apt-get "${apt[@]}" install -y --no-install-recommends patchelf
 
       # Qt modules the host app does not ship travel with the plugin, on every
       # platform: on macOS only the framework binary, in a Versions/A layout
@@ -639,6 +679,31 @@ jobs:
         with:
           persist-credentials: false
 
+      # As in the build job, which says why.
+      - name: Install Qt's Linux dependencies
+        timeout-minutes: 10
+        run: |
+          packages=(
+            build-essential libgl1-mesa-dev libgstreamer-gl1.0-0 libpulse-dev
+            libxcb-glx0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0
+            libxcb-render-util0 libxcb-render0 libxcb-shape0 libxcb-shm0
+            libxcb-sync1 libxcb-util1 libxcb-xfixes0 libxcb-xinerama0 libxcb1
+            libxkbcommon-dev libxkbcommon-x11-0 libxcb-xkb-dev libxcb-cursor0
+          )
+          missing=()
+          for package in "${packages[@]}"; do
+            dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -q 'install ok installed' \
+              || missing+=("$package")
+          done
+          if [ "${#missing[@]}" -eq 0 ]; then
+            echo "All of Qt's Linux dependencies are on the runner image."
+            exit 0
+          fi
+          echo "Installing: ${missing[*]}"
+          apt=(-o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20)
+          sudo apt-get "${apt[@]}" update -q
+          sudo apt-get "${apt[@]}" install -y "${missing[@]}"
+
       - name: Install Qt
         uses: jurplel/install-qt-action@b344308e4483fc892e0d27b3cd1b173ebdd95f06 # v4.5.0
         with:
@@ -646,6 +711,8 @@ jobs:
           arch: linux_gcc_64
           modules: ${{ needs.setup.outputs.qt-modules }}
           cache: true
+          # Installed by the step above.
+          install-deps: false
           # Pinned to a commit as in the build job above, which says why.
           aqtsource: git+https://github.com/miurahr/aqtinstall.git@076e1659807d0b362a3ed684d54c2e9c775eb9c7
           py7zrversion: ==1.1.0

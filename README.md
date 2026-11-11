@@ -9,6 +9,7 @@ through Dependabot.
 |---|---|
 | Custom Footer | [LogSquirl-CustomFooter](https://github.com/64x-lunicorn/LogSquirl-CustomFooter) |
 | Android Logcat | [LogSquirl-Logcat](https://github.com/64x-lunicorn/LogSquirl-Logcat) |
+| NATS Monitor | [LogSquirl-NATS](https://github.com/64x-lunicorn/LogSquirl-NATS) |
 | Serial Monitor | [LogSquirl-Serial](https://github.com/64x-lunicorn/LogSquirl-Serial) |
 | tcpdump / pcap Viewer | [LogSquirl-tcpdump](https://github.com/64x-lunicorn/LogSquirl-tcpdump) |
 

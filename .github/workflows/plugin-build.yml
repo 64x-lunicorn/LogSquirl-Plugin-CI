@@ -378,6 +378,27 @@ jobs:
             exit 0
           fi
           echo "Installing: ${missing[*]}"
+          # The runner's apt takes its Ubuntu mirrors from apt-mirrors.txt.
+          # When none of them resolves, fall back to kernel.org's official
+          # Ubuntu mirror: apt checks the archive's signatures, whichever
+          # mirror serves it.
+          mirrors=/etc/apt/apt-mirrors.txt
+          if [ -f "$mirrors" ]; then
+            cat "$mirrors"
+            cat "$mirrors"
+            resolved=0
+            while read -r url _; do
+              host=${url#*://}
+              host=${host%%/*}
+              if getent hosts "$host" >/dev/null; then
+                resolved=1
+              fi
+            done < "$mirrors"
+            if [ "$resolved" -eq 0 ]; then
+              echo "::warning::No Ubuntu mirror of the runner resolves; using mirrors.edge.kernel.org"
+              echo "https://mirrors.edge.kernel.org/ubuntu/" | sudo tee "$mirrors"
+            fi
+          fi
           apt=(-o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20)
           sudo apt-get "${apt[@]}" update -q
           sudo apt-get "${apt[@]}" install -y "${missing[@]}"
@@ -700,6 +721,27 @@ jobs:
             exit 0
           fi
           echo "Installing: ${missing[*]}"
+          # The runner's apt takes its Ubuntu mirrors from apt-mirrors.txt.
+          # When none of them resolves, fall back to kernel.org's official
+          # Ubuntu mirror: apt checks the archive's signatures, whichever
+          # mirror serves it.
+          mirrors=/etc/apt/apt-mirrors.txt
+          if [ -f "$mirrors" ]; then
+            cat "$mirrors"
+            cat "$mirrors"
+            resolved=0
+            while read -r url _; do
+              host=${url#*://}
+              host=${host%%/*}
+              if getent hosts "$host" >/dev/null; then
+                resolved=1
+              fi
+            done < "$mirrors"
+            if [ "$resolved" -eq 0 ]; then
+              echo "::warning::No Ubuntu mirror of the runner resolves; using mirrors.edge.kernel.org"
+              echo "https://mirrors.edge.kernel.org/ubuntu/" | sudo tee "$mirrors"
+            fi
+          fi
           apt=(-o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20)
           sudo apt-get "${apt[@]}" update -q
           sudo apt-get "${apt[@]}" install -y "${missing[@]}"

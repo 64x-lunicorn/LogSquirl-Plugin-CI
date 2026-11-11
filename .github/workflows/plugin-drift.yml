@@ -29,6 +29,7 @@ jobs:
         repo:
           - 64x-lunicorn/LogSquirl-CustomFooter
           - 64x-lunicorn/LogSquirl-Logcat
+          - 64x-lunicorn/LogSquirl-NATS
           - 64x-lunicorn/LogSquirl-Serial
           - 64x-lunicorn/LogSquirl-tcpdump
     steps:
